@@ -262,6 +262,14 @@ module SPARQL; class Client
       self
     end
 
+    def optional_union_with_bind_as(*pattern_list)
+      options[:optional_unions_with_bind] ||= []
+
+      pattern_list.each do |patterns,bind,filter|
+        options[:optional_unions_with_bind] << [build_patterns(patterns), bind, filter]
+      end
+      self
+    end
 
     def cache_key
       return nil if options[:from].nil? || options[:from].empty?
@@ -394,10 +402,38 @@ module SPARQL; class Client
           buffer << "{ #{sq.to_s} } ."
         end
 
+        def add_union_with_bind(patterns)
+          include_union = nil
+          buffer = []
+          patterns.each do |pattern, options|
+            buffer << include_union if include_union
+            buffer << '{'
+            buffer += serialize_patterns(pattern)
+            if options[:filters]
+              buffer += options[:filters].map do |filter|
+                str = filter[:values].map do |val|
+                  "?#{filter[:predicate]} = <#{val}>"
+                end
+                "FILTER(#{str.join(' || ')}) "
+              end
+            end
+
+            if options[:binds]
+              buffer += options[:binds].map { |bind| "BIND( \"#{bind[:value]}\" as ?#{bind[:as]})" }
+            end
+
+
+            buffer << '}'
+            include_union = "UNION "
+          end
+          buffer
+        end
+
         buffer += serialize_patterns(patterns)
         if options[:unions]
           include_union = nil
           options[:unions].each do |union_block|
+
             buffer << include_union if include_union
             buffer << '{'
             buffer += serialize_patterns(union_block)
@@ -406,16 +442,15 @@ module SPARQL; class Client
           end
         end
         if options[:unions_with_bind]
-          include_union = nil
-          options[:unions_with_bind].each do |union_block, value_bind, var_bind|
-            buffer << include_union if include_union
-            buffer << '{'
-            buffer += serialize_patterns(union_block)
-            buffer << "BIND (\"#{value_bind}\" as ?#{var_bind.to_s})"
-            buffer << '}'
-            include_union = "UNION "
-          end
+          buffer <<  add_union_with_bind(options[:unions_with_bind])
         end
+
+        if options[:optional_unions_with_bind] && !options[:optional_unions_with_bind].empty?
+          buffer << 'OPTIONAL {'
+          buffer <<  add_union_with_bind(options[:optional_unions_with_bind])
+          buffer << '}'
+        end
+
         if options[:optionals]
           options[:optionals].each do |patterns|
             buffer << 'OPTIONAL {'
