@@ -496,7 +496,11 @@ module SPARQL; class Client
           if i == 1 && v.equal?(rdf_type)
             'a' # abbreviate RDF.type in the predicate position per SPARQL grammar
           else
-            SPARQL::Client.serialize_value(v)
+            sv = SPARQL::Client.serialize_value(v)
+            if v.is_a?(RDF::Literal) && v.original_datatype&.to_s.eql?(RDF::XSD.string.to_s)
+              sv = "#{sv}^^<http://www.w3.org/2001/XMLSchema#string>" # 4store and Virtuoso need explicit string type
+            end
+            sv
           end
         end
         serialized_pattern.join(' ') + ' .'
