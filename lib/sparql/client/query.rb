@@ -135,10 +135,10 @@ class SPARQL::Client
     # @see    https://www.w3.org/TR/sparql11-query/#select
     def select(*variables)
       @values = if variables.length == 1 && variables.first.is_a?(Hash)
-        variables.to_a
-      else
-        variables.map { |var| [var, RDF::Query::Variable.new(var)] }
-      end
+                  variables.to_a
+                else
+                  variables.map { |var| [var, RDF::Query::Variable.new(var)] }
+                end
       self
     end
 
@@ -216,8 +216,8 @@ class SPARQL::Client
       if block_given?
         decorated_query = WhereDecorator.new(self)
         case block.arity
-          when 1 then block.call(decorated_query)
-          else decorated_query.instance_eval(&block)
+        when 1 then block.call(decorated_query)
+        else decorated_query.instance_eval(&block)
         end
       end
       self
@@ -326,11 +326,11 @@ class SPARQL::Client
     # @see    https://www.w3.org/TR/sparql11-query/#queryDataset
     def graph(graph_uri_or_var)
       options[:graph] = case graph_uri_or_var
-        when Symbol then RDF::Query::Variable.new(graph_uri_or_var)
-        when String then RDF::URI(graph_uri_or_var)
-        when RDF::Value then graph_uri_or_var
-        else raise ArgumentError
-      end
+                        when Symbol then RDF::Query::Variable.new(graph_uri_or_var)
+                        when String then RDF::URI(graph_uri_or_var)
+                        when RDF::Value then graph_uri_or_var
+                        else raise ArgumentError
+                        end
       self
     end
 
@@ -432,8 +432,8 @@ class SPARQL::Client
         query_filters = options[:filters]
         options[:filters] = []
         case block.arity
-          when 1 then block.call(self)
-          else instance_eval(&block)
+        when 1 then block.call(self)
+        else instance_eval(&block)
         end
         options[:optionals].last.concat(options[:filters])
         options[:filters] = query_filters
@@ -491,8 +491,8 @@ class SPARQL::Client
         # Evaluate calls in a new query instance
         query = self.class.select.where
         case block.arity
-          when 1 then block.call(query)
-          else query.instance_eval(&block)
+        when 1 then block.call(query)
+        else query.instance_eval(&block)
         end
         service[:query] = query
       elsif patterns.all? {|p| p.is_a?(SPARQL::Client::Query)}
@@ -507,6 +507,30 @@ class SPARQL::Client
       end
 
       self
+    end
+
+    def optional_union_with_bind_as(*pattern_list)
+      options[:optional_unions_with_bind] ||= []
+
+      pattern_list.each do |patterns, bind, filter|
+        options[:optional_unions_with_bind] << [build_patterns(patterns), bind, filter]
+      end
+      self
+    end
+
+    def cache_key
+      return nil if options[:from].nil? || options[:from].empty?
+      from = options[:from]
+      from = [from] unless from.instance_of?(Array)
+      return Query.generate_cache_key(self.to_s, from)
+    end
+
+    def self.generate_cache_key(string, from)
+      from = from.map { |x| x.to_s }.uniq.sort
+      sorted_graphs = from.join ":"
+      digest = Digest::MD5.hexdigest(string)
+      from = from.map { |x| "sparql:graph:#{x}" }
+      return { graphs: from, query: "sparql:#{sorted_graphs}:#{digest}" }
     end
 
     ##
@@ -545,8 +569,8 @@ class SPARQL::Client
         # Evaluate calls in a new query instance
         query = self.class.select
         case block.arity
-          when 1 then block.call(query)
-          else query.instance_eval(&block)
+        when 1 then block.call(query)
+        else query.instance_eval(&block)
         end
         options[:unions] << query
       elsif patterns.all? {|p| p.is_a?(SPARQL::Client::Query)}
@@ -598,8 +622,8 @@ class SPARQL::Client
         # Evaluate calls in a new query instance
         query = self.class.select
         case block.arity
-          when 1 then block.call(query)
-          else query.instance_eval(&block)
+        when 1 then block.call(query)
+        else query.instance_eval(&block)
         end
         options[:minuses] << query
       elsif patterns.all? {|p| p.is_a?(SPARQL::Client::Query)}
@@ -705,10 +729,10 @@ class SPARQL::Client
     # @return [Boolean]
     def true?
       case result
-        when TrueClass, FalseClass then result
-        when RDF::Literal::Boolean then result.true?
-        when Enumerable then !result.empty?
-        else false
+      when TrueClass, FalseClass then result
+      when RDF::Literal::Boolean then result.true?
+      when Enumerable then !result.empty?
+      else false
       end
     end
 
@@ -762,32 +786,89 @@ class SPARQL::Client
       buffer = [form.to_s.upcase]
 
       case form
-        when :select, :describe
-          only_count = values.empty? && options[:count]
-          buffer << 'DISTINCT' if options[:distinct] and not only_count
+      when :select, :describe
+        only_count = values.empty? && options[:count]
+        buffer << 'DISTINCT' if options[:distinct] and not only_count
           buffer << 'REDUCED'  if options[:reduced]
-          buffer << ((values.empty? and not options[:count]) ? '*' : values.map { |v| SPARQL::Client.serialize_value(v[1]) }.join(' '))
-          if options[:count]
-            options[:count].each do |var, count|
-              buffer << '( COUNT(' + (options[:distinct] ? 'DISTINCT ' : '') +
-                (var.is_a?(String) ? var : "?#{var}") + ') AS ' + (count.is_a?(String) ? count : "?#{count}") + ' )'
-            end
+        buffer << ((values.empty? and not options[:count]) ? '*' : values.map { |v| SPARQL::Client.serialize_value(v[1]) }.join(' '))
+        if options[:count]
+          options[:count].each do |var, count|
+            buffer << '( COUNT(' + (options[:distinct] ? 'DISTINCT ' : '') +
+              (var.is_a?(String) ? var : "?#{var}") + ') AS ' + (count.is_a?(String) ? count : "?#{count}") + ' )'
           end
-        when :construct
-          buffer << '{'
-          buffer += SPARQL::Client.serialize_patterns(options[:template])
-          buffer << '}'
+        end
+      when :construct
+        buffer << '{'
+        buffer += SPARQL::Client.serialize_patterns(options[:template])
+        buffer << '}'
       end
 
-      buffer << "FROM #{SPARQL::Client.serialize_value(options[:from])}" if options[:from]
+      from = options[:from]
+      if from
+        from = from.instance_of?(Array) ? options[:from] : [options[:from]]
+        from.each do |from|
+          buffer << "FROM #{SPARQL::Client.serialize_value(from)}"
+        end
+      end
 
       unless patterns.empty? && form == :describe
         buffer += self.to_s_ggp.unshift('WHERE')
       end
 
-      options.fetch(:unions, []).each do |query|
-        buffer += query.to_s_ggp.unshift('UNION')
+
+      if options[:unions]
+        buffer.pop # remove } of where
+        options.fetch(:unions, []).each_with_index do |query, index|
+          if index.zero?
+            buffer += query.to_s_ggp
+          else
+            buffer += query.to_s_ggp.unshift('UNION')
+          end
+        end
+        buffer << '}'
       end
+
+
+      def add_union_with_bind(patterns)
+        include_union = nil
+        buffer = []
+        patterns.each do |pattern, options|
+          buffer << include_union if include_union
+          buffer << '{'
+          buffer += serialize_patterns(pattern)
+          if options[:filters]
+            buffer += options[:filters].map do |filter|
+              str = filter[:values].map do |val|
+                "?#{filter[:predicate]} = <#{val}>"
+              end
+              "FILTER(#{str.join(' || ')}) "
+            end
+          end
+
+          if options[:binds]
+            buffer += options[:binds].map { |bind| "BIND( \"#{bind[:value]}\" as ?#{bind[:as]})" }
+          end
+
+          buffer << '}'
+          include_union = "UNION "
+        end
+        buffer
+      end
+
+      if options[:unions_with_bind]
+        buffer.pop # remove } of where
+        buffer << add_union_with_bind(options[:unions_with_bind])
+        buffer << '}'
+      end
+
+      if options[:optional_unions_with_bind] && !options[:optional_unions_with_bind].empty?
+        buffer.pop # remove } of where
+        buffer << 'OPTIONAL {'
+        buffer << add_union_with_bind(options[:optional_unions_with_bind])
+        buffer << '}'
+        buffer << '}'
+      end
+
 
       if options[:group_by]
         buffer << 'GROUP BY'
@@ -799,35 +880,35 @@ class SPARQL::Client
         options[:order_by].map { |elem|
           case elem
             # .order_by({ var1: :asc, var2: :desc})
-            when Hash
-              elem.each { |key, val|
-                # check provided values
-                if !key.is_a?(Symbol)
-                  raise ArgumentError, 'keys of hash argument must be a Symbol'
-                elsif !val.is_a?(Symbol) || (val != :asc && val != :desc)
-                  raise ArgumentError, 'values of hash argument must either be `:asc` or `:desc`'
-                end
-                buffer << "#{val == :asc ? 'ASC' : 'DESC'}(?#{key})"
-              }
-            # .order_by([:var1, :asc], [:var2, :desc])
-            when Array
+          when Hash
+            elem.each { |key, val|
               # check provided values
-              if elem.length != 2
-                raise ArgumentError, 'array argument must specify two elements'
-              elsif !elem[0].is_a?(Symbol)
-                raise ArgumentError, '1st element of array argument must contain a Symbol'
-              elsif !elem[1].is_a?(Symbol) || (elem[1] != :asc && elem[1] != :desc)
-                raise ArgumentError, '2nd element of array argument must either be `:asc` or `:desc`'
+              if !key.is_a?(Symbol)
+                raise ArgumentError, 'keys of hash argument must be a Symbol'
+              elsif !val.is_a?(Symbol) || (val != :asc && val != :desc)
+                raise ArgumentError, 'values of hash argument must either be `:asc` or `:desc`'
               end
-              buffer << "#{elem[1] == :asc ? 'ASC' : 'DESC'}(?#{elem[0]})"
+              buffer << "#{val == :asc ? 'ASC' : 'DESC'}(?#{key})"
+            }
+            # .order_by([:var1, :asc], [:var2, :desc])
+          when Array
+            # check provided values
+            if elem.length != 2
+              raise ArgumentError, 'array argument must specify two elements'
+            elsif !elem[0].is_a?(Symbol)
+              raise ArgumentError, '1st element of array argument must contain a Symbol'
+            elsif !elem[1].is_a?(Symbol) || (elem[1] != :asc && elem[1] != :desc)
+              raise ArgumentError, '2nd element of array argument must either be `:asc` or `:desc`'
+            end
+            buffer << "#{elem[1] == :asc ? 'ASC' : 'DESC'}(?#{elem[0]})"
             # .order_by(:var1, :var2)
-            when Symbol
-              buffer << "?#{elem}"
+          when Symbol
+            buffer << "?#{elem}"
             # .order_by('ASC(?var1) DESC(?var2)')
-            when String
-              buffer << elem
-            else
-              raise ArgumentError, 'argument provided to `order()` must either be an Array, Symbol or String'
+          when String
+            buffer << elem
+          else
+            raise ArgumentError, 'argument provided to `order()` must either be an Array, Symbol or String'
           end
         }
       end
@@ -898,6 +979,24 @@ class SPARQL::Client
       buffer
     end
 
+    def serialize_patterns(patterns)
+      rdf_type = RDF.type
+      patterns.map do |pattern|
+        serialized_pattern = pattern.to_triple.each_with_index.map do |v, i|
+          if i == 1 && v.equal?(rdf_type)
+            'a' # abbreviate RDF.type in the predicate position per SPARQL grammar
+          else
+            sv = SPARQL::Client.serialize_value(v)
+            if v.is_a?(RDF::Literal) && v.original_datatype&.to_s.eql?(RDF::XSD.string.to_s)
+              sv = "#{sv}^^<http://www.w3.org/2001/XMLSchema#string>" # 4store and Virtuoso need explicit string type
+            end
+            sv
+          end
+        end
+        serialized_pattern.join(' ') + ' .'
+      end
+    end
+
     ##
     # Outputs a developer-friendly representation of this query to `stderr`.
     #
@@ -915,7 +1014,7 @@ class SPARQL::Client
       sprintf("#<%s:%#0x(%s)>", self.class.name, __id__, to_s)
     end
 
-    # Allow Filters to be 
+    # Allow Filters to be
     class Filter < SPARQL::Client::QueryElement
       def initialize(*args)
         super
