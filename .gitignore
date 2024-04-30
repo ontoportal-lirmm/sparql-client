@@ -11,3 +11,7 @@ coverage
 .bundle
 /.byebug_history
 .ruby-version
+
+.idea/
+
+*.iml

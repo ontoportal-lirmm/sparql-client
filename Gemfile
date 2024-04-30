@@ -2,18 +2,18 @@ source "https://rubygems.org"
 
 gemspec
 
-gem 'rdf',                git: "https://github.com/ruby-rdf/rdf",                 branch: "develop"
-gem 'rdf-aggregate-repo', git: "https://github.com/ruby-rdf/rdf-aggregate-repo",  branch: "develop"
-gem 'sparql',             git: "https://github.com/ruby-rdf/sparql",              branch: "develop"
+gem 'rdf',                git: "https://github.com/ruby-rdf/rdf",                 tag: "3.2.11"
+gem 'rdf-aggregate-repo', git: "https://github.com/ruby-rdf/rdf-aggregate-repo",  tag: "3.2.0"
+gem 'sparql',             git: "https://github.com/ruby-rdf/sparql",              tag: "3.2.0"
 gem "nokogiri",           '~> 1.13', '>= 1.13.4'
 
 group :development, :test do
-  gem 'ebnf',           git: "https://github.com/dryruby/ebnf",                 branch: "develop"
-  gem 'rdf-isomorphic', git: "https://github.com/ruby-rdf/rdf-isomorphic",      branch: "develop"
-  gem 'rdf-spec',       git: "https://github.com/ruby-rdf/rdf-spec",            branch: "develop"
-  gem 'rdf-turtle',     git: "https://github.com/ruby-rdf/rdf-turtle",          branch: "develop"
-  gem "rdf-xsd",        git: "https://github.com/ruby-rdf/rdf-xsd",             branch: "develop"
-  gem 'sxp',            git: "https://github.com/dryruby/sxp.rb",               branch: "develop"
+  gem 'ebnf',           git: "https://github.com/dryruby/ebnf",                 tag: "2.3.5"
+  gem 'rdf-isomorphic', git: "https://github.com/ruby-rdf/rdf-isomorphic",      tag: "3.2.0"
+  gem 'rdf-spec',       git: "https://github.com/ruby-rdf/rdf-spec",            tag: "3.2.0"
+  gem 'rdf-turtle',     git: "https://github.com/ruby-rdf/rdf-turtle",          tag: "3.2.0"
+  gem "rdf-xsd",        git: "https://github.com/ruby-rdf/rdf-xsd",             tag: "3.2.0"
+  gem 'sxp'
   gem "redcarpet",      platform: :ruby
   gem 'simplecov',      '~> 0.21',  platforms: :mri
   gem 'simplecov-lcov', '~> 0.8',  platforms: :mri
