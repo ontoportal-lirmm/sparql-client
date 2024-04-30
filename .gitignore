@@ -4,6 +4,7 @@
 *~
 *.gem
 *.lock
+.idea
 pkg
 tmp
 doc

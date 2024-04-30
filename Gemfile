@@ -22,4 +22,5 @@ end
 group :debug do
   gem 'shotgun'
   gem "byebug", platforms: :mri
+  gem "pry"
 end

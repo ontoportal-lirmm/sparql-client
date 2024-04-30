@@ -1,6 +1,7 @@
 require "bundler/setup"
 require 'rspec/its'
 require 'rdf/spec'
+require 'pry'
 
 begin
   require 'simplecov'
