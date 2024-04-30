@@ -195,12 +195,13 @@ class SPARQL::Client
       end
 
       def to_s
-        query_text = 'INSERT DATA {'
-        query_text += ' GRAPH ' + SPARQL::Client.serialize_uri(self.options[:graph]) + ' {' if self.options[:graph]
+        graph = " GRAPH #{SPARQL::Client.serialize_uri(self.options[:graph])} " if self.options[:graph]
+        query_text = 'INSERT  {'
+        query_text += graph +  + ' {'
         query_text += "\n"
         query_text += RDF::NTriples::Writer.buffer { |writer| @data.each { |d| writer << d } }
         query_text += '}' if self.options[:graph]
-        query_text += "}\n"
+        query_text + "}\n"
       end
     end
 
