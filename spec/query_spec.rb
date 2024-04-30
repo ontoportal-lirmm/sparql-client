@@ -255,16 +255,20 @@ describe SPARQL::Client::Query do
 
     context "with unions" do
       it "supports pattern arguments" do
-        expect(subject.select.where([:s, :p, :o]).union([:s, :p, :o]).to_s).to eq "SELECT * WHERE { ?s ?p ?o . } UNION { ?s ?p ?o . }"
+        #expect(subject.select.where([:s, :p, :o]).union([:s, :p, :o]).to_s).to eq "SELECT * WHERE { ?s ?p ?o . } UNION { ?s ?p ?o . }"  # original expect
+        # NCBO UNION expect
+        expect(subject.select.where([:s, :p, :o]).union([:s, :p, :o]).to_s).to eq "SELECT * WHERE { ?s ?p ?o . { ?s ?p ?o . } }"
       end
 
       it "supports query arguments" do
         subquery = subject.select.where([:s, :p, :o])
-        expect(subject.select.where([:s, :p, :o]).union(subquery).to_s).to eq "SELECT * WHERE { ?s ?p ?o . } UNION { ?s ?p ?o . }"
+        # NCBO UNION expect
+        expect(subject.select.where([:s, :p, :o]).union(subquery).to_s).to eq "SELECT * WHERE { ?s ?p ?o . { ?s ?p ?o . } }"
       end
 
       it "supports block" do
-        expect(subject.select.where([:s, :p, :o]).union {|q| q.where([:s, :p, :o])}.to_s).to eq "SELECT * WHERE { ?s ?p ?o . } UNION { ?s ?p ?o . }"
+        # NCBO UNION expect
+        expect(subject.select.where([:s, :p, :o]).union {|q| q.where([:s, :p, :o])}.to_s).to eq "SELECT * WHERE { ?s ?p ?o . { ?s ?p ?o . } }"
       end
 
       it "rejects mixed arguments" do

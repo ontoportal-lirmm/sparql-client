@@ -511,7 +511,6 @@ module SPARQL
         parse_rdf_serialization(response, **options)
       end
     end
-
     ##
     # @param  [String, Hash] json
     # @return [<RDF::Query::Solutions>]
@@ -546,19 +545,21 @@ module SPARQL
     # @see    https://www.w3.org/TR/rdf-sparql-json-res/#variable-binding-results
     def self.parse_json_value(value, nodes = {})
       return nil if value == {}
+
       case value['type'].to_sym
       when :bnode
         nodes[id = value['value']] ||= RDF::Node.new(id)
       when :uri
         RDF::URI.new(value['value'])
       when :literal
-        if value['xml:lang'] or value['lang']
-          RDF::Literal.new(value['value'], :language => value['xml:lang'])
-        else
-          RDF::Literal.new(value['value'], :datatype => value['datatype'])
-        end
+        RDF::Literal.new(value['value'], datatype: value['datatype'], language: value['xml:lang'])
       when :'typed-literal'
-        RDF::Literal.new(value['value'], :datatype => value['datatype'])
+        RDF::Literal.new(value['value'], datatype: value['datatype'])
+      when :triple
+        s = parse_json_value(value['value']['subject'], nodes)
+        p = parse_json_value(value['value']['predicate'], nodes)
+        o = parse_json_value(value['value']['object'], nodes)
+        RDF::Statement(s, p, o)
       else nil
       end
     end

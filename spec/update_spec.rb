@@ -66,7 +66,8 @@ describe SPARQL::Client::Update do
     it "supports the GRAPH modifier" do
       [subject.insert_data(RDF::Graph.new, graph: 'http://example.org/'),
        subject.insert_data(RDF::Graph.new).graph('http://example.org/')].each do |example|
-        expect(example.to_s).to eq "INSERT DATA { GRAPH <http://example.org/> {\n}}\n"
+        # NCBO INSERT DATA expect
+        expect(example.to_s).to eq "INSERT  { GRAPH <http://example.org/>  {\n}}\n"
       end
     end
   end
