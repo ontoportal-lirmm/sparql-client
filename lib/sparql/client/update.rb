@@ -196,8 +196,12 @@ class SPARQL::Client
 
       def to_s
         graph = self.options[:graph] ? " GRAPH #{SPARQL::Client.serialize_uri(self.options[:graph])} " : ""
-        query_text = "INSERT #{!self.options[:graph] ? 'DATA' : ''} {"
-        query_text += graph + ' {' if self.options[:graph]
+
+        # use_insert_data option is because of Virtuous, remove when https://github.com/openlink/virtuoso-opensource/issues/126 closed
+        add_data = self.options[:use_insert_data].nil? || self.options[:use_insert_data] ? 'DATA' :  ''
+
+        query_text = "INSERT #{add_data} {"
+        query_text += graph + '{' if self.options[:graph]
         query_text += "\n"
         query_text += RDF::NTriples::Writer.buffer { |writer| @data.each { |d| writer << d } }
         query_text += '}' if self.options[:graph]
