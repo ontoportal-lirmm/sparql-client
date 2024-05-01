@@ -786,7 +786,11 @@ module SPARQL
                                  if i == 1
                                    SPARQL::Client.serialize_predicate(v)
                                  else
-                                   SPARQL::Client.serialize_value(v, use_vars)
+                                   sv = SPARQL::Client.serialize_value(v, use_vars)
+                                   if v.is_a?(RDF::Literal) && v.respond_to?(:original_datatype) && v.original_datatype&.to_s.eql?(RDF::XSD.string.to_s)
+                                     sv = "#{sv}^^<http://www.w3.org/2001/XMLSchema#string>" # 4store and Virtuoso need explicit string type
+                                   end
+                                   sv
                                  end
                                end
                              end
