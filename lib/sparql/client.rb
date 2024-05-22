@@ -1,17 +1,20 @@
-require 'net/http/persistent' # @see http://rubygems.org/gems/net-http-persistent
-require 'rdf'                 # @see http://rubygems.org/gems/rdf
-require 'rdf/ntriples'        # @see http://rubygems.org/gems/rdf
-require 'json'
-require 'cube'
+require 'net/http/persistent' # @see https://rubygems.org/gems/net-http-persistent
+require 'rdf'                 # @see https://rubygems.org/gems/rdf
+require 'rdf/ntriples'        # @see https://rubygems.org/gems/rdf
+begin
+  require 'nokogiri'
+rescue LoadError
+  require 'rexml/document'
+end
 
 module SPARQL
   ##
   # A SPARQL 1.0/1.1 client for RDF.rb.
   #
-  # @see http://www.w3.org/TR/sparql11-query/
-  # @see http://www.w3.org/TR/sparql11-protocol/
-  # @see http://www.w3.org/TR/sparql11-results-json/
-  # @see http://www.w3.org/TR/sparql11-results-csv-tsv/
+  # @see https://www.w3.org/TR/sparql11-query/
+  # @see https://www.w3.org/TR/sparql11-protocol/
+  # @see https://www.w3.org/TR/sparql11-results-json/
+  # @see https://www.w3.org/TR/sparql11-results-csv-tsv/
   class Client
     autoload :Query,      'sparql/client/query'
     autoload :Repository, 'sparql/client/repository'
@@ -26,17 +29,34 @@ module SPARQL
     RESULT_XML  = 'application/sparql-results+xml'.freeze
     RESULT_CSV  = 'text/csv'.freeze
     RESULT_TSV  = 'text/tab-separated-values'.freeze
-    RESULT_PLAIN  = 'text/plain'.freeze
-    RESULT_BOOL = 'text/boolean'.freeze                           # Sesame-specific
+    RESULT_PLAIN = 'text/plain'.freeze
+    RESULT_BOOL = 'text/boolean'.freeze # Sesame-specific
     RESULT_BRTR = 'application/x-binary-rdf-results-table'.freeze # Sesame-specific
-    ACCEPT_JSON = {'Accept' => RESULT_JSON}.freeze
-    ACCEPT_XML  = {'Accept' => RESULT_XML}.freeze
-    ACCEPT_CSV  = {'Accept' => RESULT_CSV}.freeze
-    ACCEPT_TSV  = {'Accept' => RESULT_TSV}.freeze
-    ACCEPT_BRTR = {'Accept' => RESULT_BRTR}.freeze
+    RESULT_ALL  = [
+      RESULT_JSON,
+      RESULT_XML,
+      RESULT_BOOL,
+      "#{RESULT_TSV};q=0.8",
+      "#{RESULT_CSV};q=0.2",
+      '*/*;q=0.1'
+    ].join(', ').freeze
+    GRAPH_ALL  = (
+      RDF::Format.content_types.keys +
+      ['*/*;q=0.1']
+    ).join(', ').freeze
+
+    ACCEPT_JSON    = {'Accept' => RESULT_JSON}.freeze
+    ACCEPT_XML     = {'Accept' => RESULT_XML}.freeze
+    ACCEPT_CSV     = {'Accept' => RESULT_CSV}.freeze
+    ACCEPT_TSV     = {'Accept' => RESULT_TSV}.freeze
+    ACCEPT_BRTR    = {'Accept' => RESULT_BRTR}.freeze
+    ACCEPT_RESULTS = {'Accept' => RESULT_ALL}.freeze
+    ACCEPT_GRAPH   = {'Accept' => GRAPH_ALL}.freeze
 
     DEFAULT_PROTOCOL = 1.0
     DEFAULT_METHOD   = :post
+
+    XMLNS = {'sparql' => 'http://www.w3.org/2005/sparql-results#'}.freeze
 
     ##
     # The SPARQL endpoint URL, or an RDF::Queryable instance, to use the native SPARQL engine.
@@ -67,73 +87,98 @@ module SPARQL
     # @option options [Symbol] :method (DEFAULT_METHOD)
     # @option options [Number] :protocol (DEFAULT_PROTOCOL)
     # @option options [Hash] :headers
+    #   HTTP Request headers
+    #
+    #   Defaults `Accept` header based on available reader content types if triples are expected and to SPARQL result types otherwise, to allow for content negotiation based on available readers.
+    #
+    #   Defaults  `User-Agent` header, unless one is specified.
     # @option options [Hash] :read_timeout
-    def initialize(url, options = {}, &block)
+    def initialize(url, **options, &block)
       @logger = options[:logger] ||= Kernel.const_defined?("LOGGER") ? Kernel.const_get("LOGGER") : Logger.new(STDOUT)
       @redis_cache = nil
+
       if options[:redis_cache]
         @redis_cache = options[:redis_cache]
       end
-      @cube = nil
-      if options[:cube_options]
-        cube_options=options[:cube_options]
-      end
+
       case url
       when RDF::Queryable
         @url, @options = url, options.dup
       else
         @url, @options = RDF::URI.new(url.to_s), options.dup
-#        @headers = {
-#          'Accept' => [RESULT_JSON, RESULT_XML, "#{RESULT_TSV};p=0.8", "#{RESULT_CSV};p=0.2", RDF::Format.content_types.keys.map(&:to_s)].join(', ')
-#        }.merge(@options.delete(:headers) || {})
-        @headers = {
-          'Accept' => RESULT_JSON.to_s
-          #'Accept' => RESULT_XML.to_s
-        }.merge(@options.delete(:headers) || {})
+        @headers = @options.delete(:headers) || {}
         @http = http_klass(@url.scheme)
+
+        # Close the http connection when object is deallocated
+        ObjectSpace.define_finalizer(self, self.class.finalize(@http))
       end
 
       if block_given?
         case block.arity
-          when 1 then block.call(self)
-          else instance_eval(&block)
+        when 1 then block.call(self)
+        else instance_eval(&block)
+        end
+      end
+    end
+
+    # Close the http connection when object is deallocated
+    def self.finalize(klass)
+      proc do
+        if klass.respond_to?(:shutdown)
+          begin
+            # Attempt asynchronous shutdown
+            Thread.new {klass.shutdown}
+          rescue ThreadError
+            klass.shutdown
+          end
         end
       end
     end
 
     ##
+    # Closes a client instance by finishing the connection.
+    # The client is unavailable for any further data operations; an IOError is raised if such an attempt is made. I/O streams are automatically closed when they are claimed by the garbage collector.
+    # @return [void] `self`
+    def close
+      @http.shutdown if @http
+      @http = nil
+      self
+    end
+
+    ##
     # Executes a boolean `ASK` query.
     #
+    # @param (see Query.ask)
     # @return [Query]
-    def ask(*args)
-      call_query_method(:ask, *args)
+    def ask(*args, **options)
+      call_query_method(:ask, *args, **options)
     end
 
     ##
     # Executes a tuple `SELECT` query.
     #
-    # @param  [Array<Symbol>] args
+    # @param (see Query.select)
     # @return [Query]
-    def select(*args)
-      call_query_method(:select, *args)
+    def select(*args, **options)
+      call_query_method(:select, *args, **options)
     end
 
     ##
     # Executes a `DESCRIBE` query.
     #
-    # @param  [Array<Symbol, RDF::URI>] args
+    # @param (see Query.describe)
     # @return [Query]
-    def describe(*args)
-      call_query_method(:describe, *args)
+    def describe(*args, **options)
+      call_query_method(:describe, *args, **options)
     end
 
     ##
     # Executes a graph `CONSTRUCT` query.
     #
-    # @param  [Array<Symbol>] args
+    # @param (see Query.construct)
     # @return [Query]
-    def construct(*args)
-      call_query_method(:construct, *args)
+    def construct(*args, **options)
+      call_query_method(:construct, *args, **options)
     end
 
     ##
@@ -148,23 +193,23 @@ module SPARQL
     #
     # @example Inserting data constructed ad-hoc
     #   client.insert_data(RDF::Graph.new { |graph|
-    #     graph << [:jhacker, RDF::FOAF.name, "J. Random Hacker"]
+    #     graph << [:jhacker, RDF::Vocab::FOAF.name, "J. Random Hacker"]
     #   })
     #
     # @example Inserting data sourced from a file or URL
-    #   data = RDF::Graph.load("http://rdf.rubyforge.org/doap.nt")
+    #   data = RDF::Graph.load("https://raw.githubusercontent.com/ruby-rdf/rdf/develop/etc/doap.nt")
     #   client.insert_data(data)
     #
     # @example Inserting data into a named graph
-    #   client.insert_data(data, :graph => "http://example.org/")
+    #   client.insert_data(data, graph: "http://example.org/")
     #
-    # @param  [RDF::Graph] data
+    # @param  [RDF::Enumerable] data
     # @param  [Hash{Symbol => Object}] options
     # @option options [RDF::URI, String] :graph
     # @return [void] `self`
-    # @see    http://www.w3.org/TR/sparql11-update/#insertData
-    def insert_data(data, options = {})
-      self.update(Update::InsertData.new(data, options))
+    # @see    https://www.w3.org/TR/sparql11-update/#insertData
+    def insert_data(data, **options)
+      self.update(Update::InsertData.new(data, **options))
     end
 
     ##
@@ -173,19 +218,35 @@ module SPARQL
     # This requires that the endpoint support SPARQL 1.1 Update.
     #
     # @example Deleting data sourced from a file or URL
-    #   data = RDF::Graph.load("http://rdf.rubyforge.org/doap.nt")
+    #   data = RDF::Graph.load("https://raw.githubusercontent.com/ruby-rdf/rdf/develop/etc/doap.nt")
     #   client.delete_data(data)
     #
     # @example Deleting data from a named graph
-    #   client.delete_data(data, :graph => "http://example.org/")
+    #   client.delete_data(data, graph: "http://example.org/")
     #
-    # @param  [RDF::Graph] data
+    # @param  [RDF::Enumerable] data
     # @param  [Hash{Symbol => Object}] options
     # @option options [RDF::URI, String] :graph
     # @return [void] `self`
-    # @see    http://www.w3.org/TR/sparql11-update/#deleteData
-    def delete_data(data, options = {})
-      self.update(Update::DeleteData.new(data, options))
+    # @see    https://www.w3.org/TR/sparql11-update/#deleteData
+    def delete_data(data, **options)
+      self.update(Update::DeleteData.new(data, **options))
+    end
+
+    ##
+    # Executes a `DELETE/INSERT` operation.
+    #
+    # This requires that the endpoint support SPARQL 1.1 Update.
+    #
+    # @param  [RDF::Enumerable] delete_graph
+    # @param  [RDF::Enumerable] insert_graph
+    # @param  [RDF::Enumerable] where_graph
+    # @param  [Hash{Symbol => Object}] options
+    # @option options [RDF::URI, String] :graph
+    # @return [void] `self`
+    # @see    https://www.w3.org/TR/sparql11-update/#deleteInsert
+    def delete_insert(delete_graph, insert_graph = nil, where_graph = nil, **options)
+      self.update(Update::DeleteInsert.new(delete_graph, insert_graph, where_graph, **options))
     end
 
     ##
@@ -200,9 +261,9 @@ module SPARQL
     # @param  [Hash{Symbol => Object}] options
     # @option options [Boolean] :silent
     # @return [void] `self`
-    # @see    http://www.w3.org/TR/sparql11-update/#clear
-    def clear_graph(graph_uri, options = {})
-      self.clear(:graph, graph_uri, options)
+    # @see    https://www.w3.org/TR/sparql11-update/#clear
+    def clear_graph(graph_uri, **options)
+      self.clear(:graph, graph_uri, **options)
     end
 
     ##
@@ -228,23 +289,23 @@ module SPARQL
     #   @option options [Boolean] :silent
     #   @return [void] `self`
     #
-    # @overload clear(what, *arguments, options = {})
+    # @overload clear(what, *arguments, **options)
     #   @param  [Symbol, #to_sym] what
     #   @param  [Array] arguments splat of other arguments to {Update::Clear}.
     #   @param  [Hash{Symbol => Object}] options
     #   @option options [Boolean] :silent
     #   @return [void] `self`
     #
-    # @see    http://www.w3.org/TR/sparql11-update/#clear
+    # @see    https://www.w3.org/TR/sparql11-update/#clear
     def clear(what, *arguments)
       self.update(Update::Clear.new(what, *arguments))
     end
 
     ##
     # @private
-    def call_query_method(meth, *args)
+    def call_query_method(meth, *args, **options)
       client = self
-      result = Query.send(meth, *args)
+      result = Query.send(meth, *args, **options)
       (class << result; self; end).send(:define_method, :execute) do
         client.query(self)
       end
@@ -267,81 +328,57 @@ module SPARQL
     # @option options [String] :content_type
     # @option options [Hash] :headers
     # @return [Array<RDF::Query::Solution>]
-    # @see    http://www.w3.org/TR/sparql11-protocol/#query-operation
-    def query(query, options = {})
-      # pat = /SELECT\s+\(\s*COUNT\(DISTINCT\s+\?id\)\s+AS\s+\?count_var\s*\)\s+FROM\s+\<http:\/\/data\.bioontology\.org\/ontologies\/[\w\d\-\_]+\/submissions\/\d+\>\s+WHERE\s+{\s+\?id\s+a\s+\<http:\/\/www\.w3\.org\/2002\/07\/owl\#Class>\s+\.\s+}/
-      # if query && (query.to_s =~ pat) != nil
-      #   @logger.info("#{query.to_s}")
-      #   @logger.info(caller.join("\n\t"))
-      # end
-      #TODO less intrusive ?
-      start = Time.now
+    # @raise [IOError] if connection is closed
+    # @see    https://www.w3.org/TR/sparql11-protocol/#query-operation
+    def query(query, **options)
       unless query.respond_to?(:options) && query.options[:bypass_cache]
-        if @redis_cache && (query.instance_of?(SPARQL::Client::Query) ||
-                            options[:graphs])
-          cache_key = nil
+        if @redis_cache && (query.instance_of?(SPARQL::Client::Query) || options[:graphs])
+
+
           if options[:graphs] || query.options[:graphs]
             cache_key = SPARQL::Client::Query.generate_cache_key(query.to_s,
-                          options[:graphs] || query.options[:graphs])
+                                                                 options[:graphs] || query.options[:graphs])
           else
             cache_key = query.cache_key
           end
+
           cache_response = @redis_cache.get(cache_key[:query])
+
           if options[:reload_cache] and options[:reload_cache] == true
-              @redis_cache.del(cache_key[:query])
-              cache_response = nil
+            @redis_cache.del(cache_key[:query])
+            cache_response = nil
           end
+
           if cache_response
             cache_key[:graphs].each do |g|
-              unless @redis_cache.sismember(g,cache_key[:query])
+              unless @redis_cache.sismember(g, cache_key[:query])
                 @redis_cache.del(cache_key[:query])
                 cache_response = nil
                 break
               end
             end
             if cache_response
-              if @cube 
-                @cube.send("goo_cache_hit", DateTime.now, 
-                  duration_ms: ((Time.now - start)*1000).ceil) rescue nil
-              end
               return Marshal.load(cache_response)
             end
           end
+
           options[:cache_key] = cache_key
         end
       end
       @op = :query
-      qstart = Time.now
-      # pat = /submissionStatus/
-      # if query && (query.to_s =~ pat) != nil
-      #   @logger.info("#{query.to_s}")
-      #   @logger.info(caller.join("\n\t"))
-      # end
-      r = response(query, options)
-      query_time = Time.now - qstart
-      pstart = Time.now
-      parsed = parse_response(r, options)
-      parse_time = Time.now - pstart
-      if Thread.current[:ncbo_debug]
-        @logger.info("************************* Query *************************\n#{query.to_s}")
-        @logger.info("************************ Duration ***********************")
-        @logger.info("#{Time.now - start} sec.\n")
-        (Thread.current[:ncbo_debug][:sparql_queries] ||= []) << [query_time,parse_time]
+      @alt_endpoint = options[:endpoint]
+      case @url
+      when RDF::Queryable
+        require 'sparql' unless defined?(::SPARQL::Grammar)
+        begin
+          SPARQL.execute(query, @url, optimize: true, **options)
+        rescue SPARQL::MalformedQuery
+          $stderr.puts "error running #{query}: #{$!}"
+          raise
+        end
+      else
+        parse_response(response(query, **options), **options)
       end
-      # if @cube
-      #   @cube.send("goo_query_hit", DateTime.now,
-      #     duration_ms: ((Time.now - start)*1000).ceil,
-      #     query: query.to_s) rescue nil
-      # end
-      return parsed
-      #@op = :query
-      #case @url
-      #when RDF::Queryable
-      #  require 'sparql' unless defined?(::SPARQL::Grammar)
-      #  SPARQL.execute(query, @url, options)
-      #else
-      #  parse_response(response(query, options), options)
-      #end
     end
 
     ##
@@ -349,28 +386,25 @@ module SPARQL
     #
     # @param  [String, #to_s]          query
     # @param  [Hash{Symbol => Object}] options
+    # @option options [String] :endpoint
     # @option options [String] :content_type
     # @option options [Hash] :headers
     # @return [void] `self`
-    # @see    http://www.w3.org/TR/sparql11-protocol/#update-operation
-    def update(query, options = {})
+    # @raise [IOError] if connection is closed
+    # @see    https://www.w3.org/TR/sparql11-protocol/#update-operation
+    def update(query, **options)
       @op = :update
-      options[:op] = :update
       if @redis_cache && !query.options[:bypass_cache]
-        query_delete_cache(query) 
+        query_delete_cache(query)
       end
+
+      @alt_endpoint = options[:endpoint]
       case @url
       when RDF::Queryable
         require 'sparql' unless defined?(::SPARQL::Grammar)
-        SPARQL.execute(query, @url, options)
+        SPARQL.execute(query, @url, update: true, optimize: true, **options)
       else
-        start = Time.now
-        parse_response(response(query, options), options)
-        if @cube 
-            @cube.send("sparql_write_data", DateTime.now, 
-              duration_ms: ((Time.now - start)*1000).ceil,
-              type_write: query.class.name.split("::")[-1].downcase) rescue nil
-        end
+        response(query, **options)
       end
       self
     end
@@ -384,24 +418,20 @@ module SPARQL
     # @option options [String] :content_type
     # @option options [Hash] :headers
     # @return [String]
-    def response(query, options = {})
-      op = options[:op] || :query
-      headers = options[:headers] || {}
-      query_options = (query.is_a?(Query) && query.options[:query_options]) || nil
-      unless query_options
-        query_options = (query.is_a?(String) && options[:query_options]) || nil
-      end
+    # @raise [IOError] if connection is closed
+    def response(query, **options)
+      headers = options[:headers] || @headers
       headers['Accept'] = options[:content_type] if options[:content_type]
-      request(query,op,headers,query_options) do |response|
+      request(query, headers) do |response|
         case response
           when Net::HTTPBadRequest  # 400 Bad Request
-            raise MalformedQuery.new(response.body)
-          when Net::HTTPClientError # 4xx
-            raise ClientError.new(response.body)
-          when Net::HTTPServerError # 5xx
-            raise ServerError.new(response.body)
+          raise MalformedQuery.new(response.body + " Processing query #{query}")
+        when Net::HTTPClientError # 4xx
+          raise ClientError.new(response.body + " Processing query #{query}")
+        when Net::HTTPServerError # 5xx
+          raise ServerError.new(response.body + " Processing query #{query}")
           when Net::HTTPSuccess     # 2xx
-            response
+          response
         end
       end
     end
@@ -439,17 +469,17 @@ module SPARQL
       end
     end
 
-    def query_put_cache(keys,entry)
-      #expiration = 1800 #1/2 hour
+    def query_put_cache(keys, entry)
+      # expiration = 1800 #1/2 hour
       data = Marshal.dump(entry)
-      if data.length > 50e6 #50MB of marshal object
-        #avoid large entries to go in the cache
+      if data.length > 50e6 # 50MB of marshal object
+        # avoid large entries to go in the cache
         return
       end
       keys[:graphs].each do |g|
-        @redis_cache.sadd(g,keys[:query])
+        @redis_cache.sadd(g, keys[:query])
       end
-      @redis_cache.set(keys[:query],data)
+      @redis_cache.set(keys[:query], data)
       #@redis_cache.expire(keys[:query],expiration)
     end
 
@@ -457,84 +487,91 @@ module SPARQL
     # @param  [Net::HTTPSuccess] response
     # @param  [Hash{Symbol => Object}] options
     # @return [Object]
-    def parse_response(response, options = {})
-      case content_type = options[:content_type] || response.content_type
-        when RESULT_BOOL # Sesame-specific
-          response.body == 'true'
-        when RESULT_JSON
-          result_data = self.class.parse_json_bindings(response.body, nodes)
-
-          if options[:cache_key]
-            query_put_cache(options[:cache_key],result_data)
-          end
-          return result_data
-        when RESULT_XML
-          #self.class.parse_xml_nokiri(response.body, nodes)
-          self.class.parse_xml_bindings(response.body, nodes)
-        when RESULT_CSV
-          self.class.parse_csv_bindings(response.body, nodes)
-        when RESULT_TSV
-          self.class.parse_tsv_bindings(response.body, nodes)
-        when RESULT_PLAIN
-          self.class.parse_plain_bindings(response.body, nodes)
-        else
-          parse_rdf_serialization(response, options)
+    def parse_response(response, **options)
+      case options[:content_type] || response.content_type
+      when NilClass
+        response.body
+      when RESULT_BOOL # Sesame-specific
+        response.body == 'true'
+      when RESULT_JSON
+        result_data = self.class.parse_json_bindings(response.body, nodes)
+        if options[:cache_key]
+          query_put_cache(options[:cache_key], result_data)
+        end
+        return result_data
+      when RESULT_XML
+        self.class.parse_xml_bindings(response.body, nodes)
+      when RESULT_CSV
+        self.class.parse_csv_bindings(response.body, nodes)
+      when RESULT_TSV
+        self.class.parse_tsv_bindings(response.body, nodes)
+        # when RESULT_PLAIN
+        # self.class.parse_plain_bindings(response.body, nodes)
+      else
+        parse_rdf_serialization(response, **options)
       end
     end
-
     ##
     # @param  [String, Hash] json
     # @return [<RDF::Query::Solutions>]
-    # @see    http://www.w3.org/TR/rdf-sparql-json-res/#results
+    # @see    https://www.w3.org/TR/rdf-sparql-json-res/#results
     def self.parse_json_bindings(json, nodes = {})
-      json = json.force_encoding(::Encoding::UTF_8) if json.respond_to?(:force_encoding)
-      begin
-        json = JSON.parse(json.to_s) unless json.is_a?(Hash)
-      rescue Exception => e
-        json = json.split("").select { |x| x.ord > 31 }.join ''
-        json = JSON.parse(json.to_s) unless json.is_a?(Hash)
-      end
+      require 'json' unless defined?(::JSON)
+      json = JSON.parse(json.to_s) unless json.is_a?(Hash)
       case
-        when json.has_key?('boolean')
-          json['boolean']
-        when json.has_key?('results')
-          solutions = json['results']['bindings'].map do |row|
-            row = row.inject({}) do |cols, (name, value)|
-              cols.merge(name.to_sym => parse_json_value(value))
-            end
-            RDF::Query::Solution.new(row)
+      when json.has_key?('boolean')
+        json['boolean']
+      when json.has_key?('results')
+        solutions = json['results']['bindings'].map do |row|
+          row = row.inject({}) do |cols, (name, value)|
+            cols.merge(name.to_sym => parse_json_value(value, nodes))
           end
-          RDF::Query::Solutions.new(solutions)
+          RDF::Query::Solution.new(row)
+        end
+        solns = RDF::Query::Solutions.new(solutions)
+
+        # Set variable names explicitly
+        if json.fetch('head', {}).has_key?('vars')
+          solns.variable_names = json['head']['vars'].map(&:to_sym)
+        end
+        solns
       end
     end
 
     ##
     # @param  [Hash{String => String}] value
     # @return [RDF::Value]
-    # @see    http://www.w3.org/TR/rdf-sparql-json-res/#variable-binding-results
+    # @see    https://www.w3.org/TR/sparql11-results-json/#select-encode-terms
+    # @see    https://www.w3.org/TR/rdf-sparql-json-res/#variable-binding-results
     def self.parse_json_value(value, nodes = {})
       return nil if value == {}
+
       case value['type'].to_sym
-        when :bnode
-          nodes[id = value['value']] ||= RDF::Node.new(id)
-        when :uri
-          RDF::URI.new(value['value'])
-        when :literal
-          if value['xml:lang'] or value['lang']
-            RDF::Literal.new(value['value'], :language => value['xml:lang'])
-          else
-            RDF::Literal.new(value['value'], :datatype => value['datatype'])
-          end
-        when :'typed-literal'
-          RDF::Literal.new(value['value'], :datatype => value['datatype'])
-        else nil
+      when :bnode
+        nodes[id = value['value']] ||= RDF::Node.new(id)
+      when :uri
+        RDF::URI.new(value['value'])
+      when :literal
+        RDF::Literal.new(value['value'], datatype: value['datatype'], language: value['xml:lang'])
+      when :'typed-literal'
+        RDF::Literal.new(value['value'], datatype: value['datatype'])
+      when :triple
+        s = parse_json_value(value['value']['subject'], nodes)
+        p = parse_json_value(value['value']['predicate'], nodes)
+        o = parse_json_value(value['value']['object'], nodes)
+        RDF::Statement(s, p, o)
+      else nil
       end
+    end
+
+    def self.parse_plain_bindings(plain, nodes = {})
+      return plain
     end
 
     ##
     # @param  [String, Array<Array<String>>] csv
     # @return [<RDF::Query::Solutions>]
-    # @see    http://www.w3.org/TR/sparql11-results-csv-tsv/
+    # @see    https://www.w3.org/TR/sparql11-results-csv-tsv/
     def self.parse_csv_bindings(csv, nodes = {})
       require 'csv' unless defined?(::CSV)
       csv = CSV.parse(csv.to_s) unless csv.is_a?(Array)
@@ -544,10 +581,10 @@ module SPARQL
         solution = RDF::Query::Solution.new
         row.each_with_index do |v, i|
           term = case v
-          when /^_:(.*)$/ then nodes[$1] ||= RDF::Node($1)
-          when /^\w+:.*$/ then RDF::URI(v)
-          else RDF::Literal(v)
-          end
+                 when /^_:(.*)$/ then nodes[$1] ||= RDF::Node($1)
+                 when /^\w+:.*$/ then RDF::URI(v)
+                 else RDF::Literal(v)
+                 end
           solution[vars[i].to_sym] = term
         end
         solutions << solution
@@ -558,22 +595,28 @@ module SPARQL
     ##
     # @param  [String, Array<Array<String>>] tsv
     # @return [<RDF::Query::Solutions>]
-    # @see    http://www.w3.org/TR/sparql11-results-csv-tsv/
+    # @see    https://www.w3.org/TR/sparql11-results-csv-tsv/
     def self.parse_tsv_bindings(tsv, nodes = {})
       tsv = tsv.lines.map {|l| l.chomp.split("\t")} unless tsv.is_a?(Array)
       vars = tsv.shift.map {|h| h.sub(/^\?/, '')}
       solutions = RDF::Query::Solutions.new
       tsv.each do |row|
+        # Flesh out columns which may be missing
+        vars.each_with_index do |_, i|
+          row[i] ||= ""
+        end
         solution = RDF::Query::Solution.new
         row.each_with_index do |v, i|
-          term = RDF::NTriples.unserialize(v) || case v
+          term = case v
+          when ""                           then RDF::Literal("")
           when /^\d+\.\d*[eE][+-]?[0-9]+$/  then RDF::Literal::Double.new(v)
           when /^\d*\.\d+[eE][+-]?[0-9]+$/  then RDF::Literal::Double.new(v)
           when /^\d*\.\d+$/                 then RDF::Literal::Decimal.new(v)
           when /^\d+$/                      then RDF::Literal::Integer.new(v)
-          else
-            RDF::Literal(v)
-          end
+                 else
+                   RDF::NTriples.unserialize(v) || RDF::Literal(v)
+                 end
+          nodes[term.id] = term if term.is_a? RDF::Node
           solution[vars[i].to_sym] = term
         end
         solutions << solution
@@ -581,20 +624,41 @@ module SPARQL
       solutions
     end
 
-    def self.parse_plain_bindings(plain, nodes = {})
-      return plain
-    end
-
     ##
-    # @param  [String, REXML::Element] xml
+    # @param  [String, IO, Nokogiri::XML::Node, REXML::Element] xml
+    # @param  [Symbol] library (:nokogiri)
+    #   One of :nokogiri or :rexml.
     # @return [<RDF::Query::Solutions>]
-    # @see    http://www.w3.org/TR/rdf-sparql-json-res/#results
-    def self.parse_xml_bindings(xml, nodes = {})
+    # @see    https://www.w3.org/TR/rdf-sparql-json-res/#results
+    def self.parse_xml_bindings(xml, nodes = {}, library: :nokogiri)
       xml.force_encoding(::Encoding::UTF_8) if xml.respond_to?(:force_encoding)
-      require 'rexml/document' unless defined?(::REXML::Document)
-      xml = REXML::Document.new(xml).root unless xml.is_a?(REXML::Element)
 
-      case
+      if defined?(::Nokogiri) && library == :nokogiri
+        xml = Nokogiri::XML(xml).root unless xml.is_a?(Nokogiri::XML::Document)
+        case
+        when boolean = xml.xpath("//sparql:boolean", XMLNS)[0]
+          boolean.text == 'true'
+        when results = xml.xpath("//sparql:results", XMLNS)[0]
+          solutions = results.elements.map do |result|
+            row = {}
+            result.elements.each do |binding|
+              name  = binding.attr('name').to_sym
+              value = binding.elements.first
+              row[name] = parse_xml_value(value, nodes) if value
+            end
+            RDF::Query::Solution.new(row)
+          end
+          solns = RDF::Query::Solutions.new(solutions)
+
+          # Set variable names explicitly
+          var_names = xml.xpath("//sparql:head/sparql:variable/@name", XMLNS)
+          solns.variable_names = var_names.map(&:to_s)
+          solns
+        end
+      else
+        # REXML
+        xml = REXML::Document.new(xml).root unless xml.is_a?(REXML::Element)
+        case
         when boolean = xml.elements['boolean']
           boolean.text == 'true'
         when results = xml.elements['results']
@@ -603,29 +667,39 @@ module SPARQL
             result.elements.each do |binding|
               name  = binding.attributes['name'].to_sym
               value = binding.select { |node| node.kind_of?(::REXML::Element) }.first
-              row[name] = parse_xml_value(value, nodes)
+              row[name] = parse_xml_value(value, nodes) if value
             end
             RDF::Query::Solution.new(row)
           end
-          RDF::Query::Solutions.new(solutions)
+          solns = RDF::Query::Solutions.new(solutions)
+
+          # Set variable names explicitly
+          var_names = xml.elements['head'].elements.map {|e| e.attributes['name']}
+          solns.variable_names = var_names.map(&:to_sym)
+          solns
+        end
       end
     end
 
     ##
-    # @param  [REXML::Element] value
+    # @param  [Nokogiri::XML::Element, REXML::Element] value
     # @return [RDF::Value]
-    # @see    http://www.w3.org/TR/rdf-sparql-json-res/#variable-binding-results
+    # @see    https://www.w3.org/TR/rdf-sparql-json-res/#variable-binding-results
     def self.parse_xml_value(value, nodes = {})
       case value.name.to_sym
-        when :bnode
-          nodes[id = value.text] ||= RDF::Node.new(id)
-        when :uri
-          RDF::URI.new(value.text)
-        when :literal
-          RDF::Literal.new(value.text, {
-            :language => value.attributes['xml:lang'],
-            :datatype => value.attributes['datatype'],
-          })
+      when :bnode
+        nodes[id = value.text] ||= RDF::Node.new(id)
+      when :uri
+        RDF::URI.new(value.text)
+      when :literal
+          lang     = value.respond_to?(:attr) ? value.attr('xml:lang') : value.attributes['xml:lang']
+        datatype = value.respond_to?(:attr) ? value.attr('datatype') : value.attributes['datatype']
+        RDF::Literal.new(value.text, language: lang, datatype: datatype)
+      when :triple
+        # Note, this is order dependent
+          res = value.elements.map {|e| e.elements.to_a}.
+            flatten.map {|e| parse_xml_value(e, nodes)}
+        RDF::Statement(*res)
         else nil
       end
     end
@@ -634,10 +708,12 @@ module SPARQL
     # @param  [Net::HTTPSuccess] response
     # @param  [Hash{Symbol => Object}] options
     # @return [RDF::Enumerable]
-    def parse_rdf_serialization(response, options = {})
-      options = {:content_type => response.content_type} if options.empty?
-      if reader = RDF::Reader.for(options)
+    def parse_rdf_serialization(response, **options)
+      options = {content_type: response.content_type} unless options[:content_type]
+      if reader = RDF::Reader.for(**options)
         reader.new(response.body)
+      else
+        raise RDF::ReaderError, "no RDF reader was found for #{options}."
       end
     end
 
@@ -649,9 +725,9 @@ module SPARQL
     # @private
     def self.serialize_uri(uri)
       case uri
-        when String then RDF::NTriples.serialize(RDF::URI(uri))
-        when RDF::URI then RDF::NTriples.serialize(uri)
-        else raise ArgumentError, "expected the graph URI to be a String or RDF::URI, but got #{uri.inspect}"
+      when String then RDF::NTriples.serialize(RDF::URI(uri))
+      when RDF::URI then RDF::NTriples.serialize(uri)
+      else raise ArgumentError, "expected the graph URI to be a String or RDF::URI, but got #{uri.inspect}"
       end
     end
 
@@ -659,14 +735,66 @@ module SPARQL
     # Serializes an `RDF::Value` into SPARQL syntax.
     #
     # @param  [RDF::Value] value
+    # @param  [Boolean] use_vars (false) Use variables in place of BNodes
     # @return [String]
     # @private
-    def self.serialize_value(value)
+    def self.serialize_value(value, use_vars = false)
       # SPARQL queries are UTF-8, but support ASCII-style Unicode escapes, so
       # the N-Triples serializer is fine unless it's a variable:
       case
+        when value.nil?      then RDF::Query::Variable.new.to_s
         when value.variable? then value.to_s
-        else RDF::NTriples.serialize(value)
+        when value.node?     then (use_vars ? RDF::Query::Variable.new(value.id) : value)
+      else RDF::NTriples.serialize(value)
+      end
+    end
+
+    ##
+    # Serializes a SPARQL predicate
+    #
+    # @param [RDF::Value, Array, String] value
+    # @param [Fixnum] rdepth
+    # @return [String]
+    # @private
+    def self.serialize_predicate(value,rdepth=0)
+      case value
+      when nil
+        RDF::Query::Variable.new.to_s
+      when String then value
+      when Array
+          s = value.map{|v|serialize_predicate(v,rdepth+1)}.join
+        rdepth > 0 ? "(#{s})" : s
+      when RDF::Value
+        # abbreviate RDF.type in the predicate position per SPARQL grammar
+        value.equal?(RDF.type) ? 'a' : serialize_value(value)
+      end
+    end
+
+    ##
+    # Serializes a SPARQL graph
+    #
+    # @param [RDF::Enumerable] patterns
+    # @param  [Boolean] use_vars (false) Use variables in place of BNodes
+    # @return [String]
+    # @private
+    def self.serialize_patterns(patterns, use_vars = false)
+      patterns.map do |pattern|
+        serialized_pattern = case pattern
+                             when SPARQL::Client::QueryElement then [pattern.to_s]
+                             else
+                               RDF::Statement.from(pattern).to_triple.each_with_index.map do |v, i|
+                                 if i == 1
+                                   SPARQL::Client.serialize_predicate(v)
+                                 else
+                                   sv = SPARQL::Client.serialize_value(v, use_vars)
+                                   if v.is_a?(RDF::Literal) && v.respond_to?(:original_datatype) && v.original_datatype&.to_s.eql?(RDF::XSD.string.to_s)
+                                     sv = "#{sv}^^<http://www.w3.org/2001/XMLSchema#string>" # 4store and Virtuoso need explicit string type
+                                   end
+                                   sv
+                                 end
+                               end
+                             end
+        serialized_pattern.join(' ') + ' .'
       end
     end
 
@@ -690,16 +818,6 @@ module SPARQL
       @redis_cache = redis_cache
     end
 
-    def cube_options=(cube_options)
-      if cube_options
-        cube_host = cube_options[:host] || "localhost"
-        cube_port = cube_options[:port] || 1180
-        @cube = Cube::Client.new(cube_host, cube_port)
-      else
-        @cube = nil
-      end
-    end
-
     protected
 
     ##
@@ -711,15 +829,15 @@ module SPARQL
     def http_klass(scheme)
       proxy_url = nil
       case scheme
-        when 'http'
-          value = ENV['http_proxy']
-          proxy_url = URI.parse(value) unless value.nil? || value.empty?
-        when 'https'
-          value = ENV['https_proxy']
-          proxy_url = URI.parse(value) unless value.nil? || value.empty?
+      when 'http'
+        value = ENV['http_proxy']
+        proxy_url = URI.parse(value) unless value.nil? || value.empty?
+      when 'https'
+        value = ENV['https_proxy']
+        proxy_url = URI.parse(value) unless value.nil? || value.empty?
       end
-      klass = Net::HTTP::Persistent.new(self.class.to_s, proxy_url)
-      klass.keep_alive = 120 # increase to 2 minutes
+      klass = Net::HTTP::Persistent.new(name: self.class.to_s, proxy: proxy_url)
+      klass.keep_alive =  @options[:keep_alive] || 120
       klass.read_timeout = @options[:read_timeout] || 60
       klass
     end
@@ -729,25 +847,56 @@ module SPARQL
     #
     # @param  [String, #to_s]          query
     # @param  [Hash{String => String}] headers
+    #   HTTP Request headers
+    #
+    #   Defaults `Accept` header based on available reader content types if triples are expected and to SPARQL result types otherwise, to allow for content negotiation based on available readers.
+    #
+    #   Defaults  `User-Agent` header, unless one is specified.
     # @yield  [response]
     # @yieldparam [Net::HTTPResponse] response
     # @return [Net::HTTPResponse]
-    # @see    http://www.w3.org/TR/sparql11-protocol/#query-operation
-    def request(query, headers = {}, op = :query, query_options = nil, &block)
-      method = (self.options[:method] || DEFAULT_METHOD).to_sym
-      request = send("make_#{method}_request", query,op , headers, query_options)
+    # @raise [IOError] if connection is closed
+    # @see    https://www.w3.org/TR/sparql11-protocol/#query-operation
+    def request(query, headers = {}, &block)
+      # Make sure an appropriate Accept header is present
+      headers['Accept'] ||= if (query.respond_to?(:expects_statements?) ?
+                                  query.expects_statements? :
+                                  (query =~ /CONSTRUCT|DESCRIBE|DELETE|CLEAR/))
+                              GRAPH_ALL
+                            else
+                              RESULT_ALL
+                            end
+      headers['User-Agent'] ||= "Ruby SPARQL::Client/#{SPARQL::Client::VERSION}"
+
+      request = send("make_#{request_method(query)}_request", query, headers)
 
       request.basic_auth(url.user, url.password) if url.user && !url.user.empty?
 
-      @http.open_timeout = @http.read_timeout
-      @http.idle_timeout = nil
-      response = @http.request(url, request)
-      if block_given?
-        block.call(response)
-      else
-        response
+      pre_http_hook(request) if respond_to?(:pre_http_hook)
+
+      raise IOError, "Client has been closed" unless @http
+      response = @http.request(::URI.parse(url.to_s), request)
+
+      post_http_hook(response) if respond_to?(:post_http_hook)
+
+      10.times do
+        if response.kind_of? Net::HTTPRedirection
+          response = @http.request(::URI.parse(response['location']), request)
+        else
+          return block_given? ? block.call(response) : response
+        end
       end
+      raise ServerError, "Infinite redirect at #{url}. Redirected more than 10 times."
     end
+
+    ##
+    # Return the HTTP verb for posting this request.
+    # this is useful if you need to override the HTTP verb based on the request being made.
+    # (e.g. Marmotta 3.3.0 requires GET for DELETE requests, but can accept POST for INSERT)
+    def request_method(query)
+      (options[:method] || DEFAULT_METHOD).to_sym
+    end
+
 
     ##
     # Constructs an HTTP GET request according to the SPARQL Protocol.
@@ -755,10 +904,11 @@ module SPARQL
     # @param  [String, #to_s]          query
     # @param  [Hash{String => String}] headers
     # @return [Net::HTTPRequest]
-    # @see    http://www.w3.org/TR/sparql11-protocol/#query-via-get
-    def make_get_request(query,op = :query, headers = {},query_options = nil)
+    # @see    https://www.w3.org/TR/sparql11-protocol/#query-via-get
+    def make_get_request(query, headers = {})
       url = self.url.dup
-      url.query_values = (url.query_values || {}).merge(op => query.to_s)
+      url.query_values = (url.query_values || {}).merge(query: query.to_s)
+      set_url_default_graph url unless @options[:graph].nil?
       request = Net::HTTP::Get.new(url.request_uri, self.headers.merge(headers))
       request
     end
@@ -769,27 +919,77 @@ module SPARQL
     # @param  [String, #to_s]          query
     # @param  [Hash{String => String}] headers
     # @return [Net::HTTPRequest]
-    # @see    http://www.w3.org/TR/sparql11-protocol/#query-via-post-direct
-    # @see    http://www.w3.org/TR/sparql11-protocol/#query-via-post-urlencoded
-    def make_post_request(query, headers = {}, op = :query, query_options = nil)
-      request = Net::HTTP::Post.new(self.url.request_uri, self.headers.merge(headers))
+    # @see    https://www.w3.org/TR/sparql11-protocol/#query-via-post-direct
+    # @see    https://www.w3.org/TR/sparql11-protocol/#query-via-post-urlencoded
+    def make_post_request(query, headers = {})
+      if @alt_endpoint.nil?
+        url = self.url.dup
+        set_url_default_graph url unless @options[:graph].nil?
+        endpoint = url.request_uri
+      else
+        endpoint = @alt_endpoint
+      end
+
+      request = Net::HTTP::Post.new(endpoint, self.headers.merge(headers))
       case (self.options[:protocol] || DEFAULT_PROTOCOL).to_s
-        when '1.1'
-          if self.options['Content-Type'] == "application/x-www-form-urlencoded"
-            request['Content-Type'] = "application/x-www-form-urlencoded"
-            form = {op => query.to_s}
-            form = form.merge(query_options) if query_options
-            request.set_form_data(form)
-          else
-            request['Content-Type'] = 'application/sparql-' + (@op || :query).to_s
-            request.body = query.to_s
-          end
-        when '1.0'
-          request.set_form_data((@op || :query) => query.to_s)
+      when '1.1'
+        if headers['Content-Type'] == "application/x-www-form-urlencoded"
+          request['Content-Type'] = "application/x-www-form-urlencoded"
+          form = { @op => query.to_s }
+          request.set_form_data(form)
         else
-          raise ArgumentError, "unknown SPARQL protocol version: #{self.options[:protocol].inspect}"
+          request['Content-Type'] = 'application/sparql-' + (@op || :query).to_s
+          request.body = query.to_s
+        end
+      when '1.0'
+          form_data = {(@op || :query) => query.to_s}
+          form_data.merge!(
+            {:'default-graph-uri' => @options[:graph]}
+          ) if !@options[:graph].nil? && (@op.eql? :query)
+          form_data.merge!(
+            {:'using-graph-uri' => @options[:graph]}
+          ) if !@options[:graph].nil? && (@op.eql? :update)
+          request.set_form_data(form_data)
+      else
+        raise ArgumentError, "unknown SPARQL protocol version: #{self.options[:protocol].inspect}"
       end
       request
+    end
+
+    ##
+    # Setup url query parameter to use a specified default graph
+    #
+    # @see    https://www.w3.org/TR/sparql11-protocol/#query-operation
+    # @see    https://www.w3.org/TR/sparql11-protocol/#update-operation
+    def set_url_default_graph url
+      if @options[:graph].is_a? Array
+        graphs = @options[:graph].map {|graph|
+          CGI::escape(graph)
+        }
+      else
+        graphs = CGI::escape(@options[:graph])
+      end
+      case @op
+      when :query
+        url.query_values = (url.query_values || {})
+                             .merge(:'default-graph-uri' => graphs)
+      when :update
+        url.query_values = (url.query_values || {})
+                             .merge(:'using-graph-uri' => graphs)
+      end
+    end
+
+    # A query element can be used as a component of a query. It may be initialized with a string, which is wrapped in an appropriate container depending on the type of QueryElement. Implements {#to_s} to property serialize when generating a SPARQL query.
+    class QueryElement
+      attr_reader :elements
+
+      def initialize(*args)
+        @elements = args
+      end
+
+      def to_s
+        raise NotImplemented
+      end
     end
   end # Client
 end # SPARQL

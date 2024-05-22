@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<sparql xmlns="http://www.w3.org/2005/sparql-results#">
+  <head>
+    <variable name="x"/>
+    <variable name="hpage"/>
+    <variable name="name"/>
+    <variable name="age"/>
+    <variable name="mbox"/>
+    <variable name="triple"/>
+  </head>
+  <results>
+    <result>
+      <binding name="x">
+        <bnode>r2</bnode>
+      </binding>
+      <binding name="hpage">
+        <uri>http://work.example.org/bob/</uri>
+      </binding>
+      <binding name="name">
+        <literal xml:lang="en">Bob</literal>
+      </binding>
+      <binding name="age">
+        <literal datatype="http://www.w3.org/2001/XMLSchema#integer">30</literal>
+      </binding>
+      <binding name="mbox">
+        <uri>mailto:bob@work.example.org</uri>
+      </binding>
+      <binding name="_empty"></binding>
+      <binding name="triple">
+        <triple>
+          <subject><uri>http://work.example.org/s</uri></subject>
+          <predicate><uri>http://work.example.org/p</uri></predicate>
+          <object><uri>http://work.example.org/o</uri></object>
+        </triple>
+      </binding>
+    </result>
+  </results>
+</sparql>
+
