@@ -18,6 +18,7 @@ module SPARQL
   class Client
     autoload :Query,      'sparql/client/query'
     autoload :Cache, 'sparql/client/cache'
+    autoload :Logging, 'sparql/client/logging'
     autoload :Repository, 'sparql/client/repository'
     autoload :Update,     'sparql/client/update'
     autoload :VERSION,    'sparql/client/version'
@@ -60,6 +61,8 @@ module SPARQL
     XMLNS = {'sparql' => 'http://www.w3.org/2005/sparql-results#'}.freeze
 
     attr_reader :cache
+    attr_reader :logger
+
     ##
     # The SPARQL endpoint URL, or an RDF::Queryable instance, to use the native SPARQL engine.
     #
@@ -96,9 +99,9 @@ module SPARQL
     #   Defaults  `User-Agent` header, unless one is specified.
     # @option options [Hash] :read_timeout
     def initialize(url, **options, &block)
-      @logger = options[:logger] ||= Kernel.const_defined?("LOGGER") ? Kernel.const_get("LOGGER") : Logger.new(STDOUT)
-
       @cache = SPARQL::Client::Cache.new(redis_cache: options[:redis_cache])
+      @logger = Logging.new(redis: @cache.redis_cache,
+                            logger: options[:logger])
 
       case url
       when RDF::Queryable
@@ -330,23 +333,32 @@ module SPARQL
     # @raise [IOError] if connection is closed
     # @see    https://www.w3.org/TR/sparql11-protocol/#query-operation
     def query(query, **options)
-      cached_response = @cache.get(query, options)
+      cached_response = nil
+      @logger.log(query, user: options[:user]) do
+        cached_response = @cache.get(query, options)
+      end
+
       return cached_response if cached_response
+
 
       @op = :query
       @alt_endpoint = options[:endpoint]
-      case @url
-      when RDF::Queryable
-        require 'sparql' unless defined?(::SPARQL::Grammar)
-        begin
-          SPARQL.execute(query, @url, optimize: true, **options)
-        rescue SPARQL::MalformedQuery
-          $stderr.puts "error running #{query}: #{$!}"
-          raise
+      output = nil
+      @logger.log(query, user: options[:user], cached: false) do
+        case @url
+        when RDF::Queryable
+          require 'sparql' unless defined?(::SPARQL::Grammar)
+          begin
+            output = SPARQL.execute(query, @url, optimize: true, **options)
+          rescue SPARQL::MalformedQuery
+            $stderr.puts "error running #{query}: #{$!}"
+            raise
+          end
+        else
+          output = parse_response(response(query, **options), **options)
         end
-      else
-        parse_response(response(query, **options), **options)
       end
+      output
     end
 
     ##
@@ -369,12 +381,14 @@ module SPARQL
       end
 
       @alt_endpoint = options[:endpoint]
-      case @url
-      when RDF::Queryable
-        require 'sparql' unless defined?(::SPARQL::Grammar)
-        SPARQL.execute(query, @url, update: true, optimize: true, **options)
-      else
-        response(query, **options)
+      @logger.log(query, user: options[:user], cached: false) do
+        case @url
+        when RDF::Queryable
+          require 'sparql' unless defined?(::SPARQL::Grammar)
+          SPARQL.execute(query, @url, update: true, optimize: true, **options)
+        else
+          response(query, **options)
+        end
       end
       self
     end
@@ -740,6 +754,11 @@ module SPARQL
 
     def redis_cache=(redis_cache)
       @cache.redis_cache = redis_cache
+      @logger.redis = redis_cache
+    end
+
+    def logger=(logger)
+      @logger.logger =  logger
     end
 
     protected
