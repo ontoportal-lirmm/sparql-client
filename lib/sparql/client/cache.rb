@@ -19,7 +19,7 @@ class SPARQL::Client
     end
 
     def key(query, options)
-      generate_cache_key(query, options)
+      query_cache_key(query, options)
     end
 
     def self.generate_cache_key(string, from)
@@ -78,9 +78,9 @@ class SPARQL::Client
       SPARQL::Client::Cache.generate_cache_key(query.to_s, from)
     end
 
-    def generate_cache_key(query, options)
+    def query_cache_key(query, options)
       if options[:graphs] || query.options[:graphs]
-        cache_key = SPARQL::Client::Query.generate_cache_key(query.to_s, options[:graphs] || query.options[:graphs])
+        cache_key = SPARQL::Client::Cache.generate_cache_key(query.to_s, options[:graphs] || query.options[:graphs])
       else
         cache_key = cache_key(query)
       end
@@ -92,7 +92,7 @@ class SPARQL::Client
 
       if @redis_cache && (query.instance_of?(SPARQL::Client::Query) || options[:graphs])
 
-        cache_key = generate_cache_key(query, options)
+        cache_key = query_cache_key(query, options)
         cache_response = @redis_cache.get(cache_key[:query])
 
         if options[:reload_cache] and options[:reload_cache] == true

@@ -1,4 +1,6 @@
 require 'benchmark'
+require 'securerandom'
+
 class SPARQL::Client
   class Logging
     attr_accessor :logger
