@@ -787,6 +787,11 @@ module SPARQL
       klass
     end
 
+    def use_digest_auth?
+      # Customize this logic as needed
+      ENV['USE_DIGEST_AUTH'] == 'true' || ENV['USE_DIGEST_AUTH'] == true
+    end
+
     ##
     # Authenticate a request using HTTP Digest Authentication for Virtuoso.
     #
@@ -834,9 +839,8 @@ module SPARQL
 
       request = send("make_#{request_method(query)}_request", query, headers)
 
-      use_digest_auth = LinkedData.settings["use_digest_auth"]
       if url.user && !url.user.empty?
-        if use_digest_auth
+        if use_digest_auth?
           authenticate_with_digest(request, url)
         else
           request.basic_auth(url.user, url.password)
