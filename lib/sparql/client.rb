@@ -1,6 +1,7 @@
 require 'net/http/persistent' # @see https://rubygems.org/gems/net-http-persistent
 require 'rdf'                 # @see https://rubygems.org/gems/rdf
 require 'rdf/ntriples'        # @see https://rubygems.org/gems/rdf
+require 'net/http/digest_auth'
 begin
   require 'nokogiri'
 rescue LoadError
@@ -787,6 +788,25 @@ module SPARQL
     end
 
     ##
+    # Authenticate a request using HTTP Digest Authentication for Virtuoso.
+    #
+    # @param  [Net::HTTPRequest] request
+    # @param  [URI] url
+    # @return [void]
+    # @see    https://www.rubydoc.info/stdlib/net/http/Net/HTTP/DigestAuth
+    # @see    https://www.rubydoc.info/stdlib/net/http/Net/HTTP#request_head-instance_method
+    # @see    https://
+    def authenticate_with_digest(request, url)
+      http = Net::HTTP.new(url.host, url.port)
+      http.use_ssl = (url.scheme == 'https')
+      res = http.request_head(url.request_uri)
+      digest_auth = Net::HTTP::DigestAuth.new
+      auth_header = digest_auth.auth_header(url, res['www-authenticate'], request.method)
+      request['Authorization'] = auth_header
+    end
+
+
+    ##
     # Performs an HTTP request against the SPARQL endpoint.
     #
     # @param  [String, #to_s]          query
@@ -814,7 +834,14 @@ module SPARQL
 
       request = send("make_#{request_method(query)}_request", query, headers)
 
-      request.basic_auth(url.user, url.password) if url.user && !url.user.empty?
+      use_digest_auth = LinkedData.settings["use_digest_auth"]
+      if url.user && !url.user.empty?
+        if use_digest_auth
+          authenticate_with_digest(request, url)
+        else
+          request.basic_auth(url.user, url.password)
+        end
+      end
 
       pre_http_hook(request) if respond_to?(:pre_http_hook)
 
