@@ -839,12 +839,15 @@ module SPARQL
 
       request = send("make_#{request_method(query)}_request", query, headers)
 
-      if url.user && !url.user.empty?
-        if use_digest_auth?
-          authenticate_with_digest(request, url)
-        else
-          request.basic_auth(url.user, url.password)
+      if use_digest_auth?
+        if !ENV['DB_USER'] || !ENV['DB_PASSWORD']
+          raise Exception, "Environment variables DB_USER and DB_PASSWORD must be set for digest authentication"
         end
+        url.user = ENV['DB_USER']
+        url.password = ENV['DB_PASSWORD']
+        authenticate_with_digest(request, url)
+      elsif url.user && url.password
+        request.basic_auth(url.user, url.password)
       end
 
       pre_http_hook(request) if respond_to?(:pre_http_hook)
